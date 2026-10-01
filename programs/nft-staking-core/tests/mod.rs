@@ -20,7 +20,8 @@ use {
         Asset, ID as CORE_PROGRAM_ID,
     },
     nft_staking_core::{
-        CONFIG_SEED, ORACLE_SEED, REWARDS_SEED, STAKED_AT_KEY, UPDATE_AUTHORITY_SEED,
+        CONFIG_SEED, CRANK_REWARD_LAMPORTS, ORACLE_SEED, REWARDS_SEED, STAKED_AT_KEY,
+        UPDATE_AUTHORITY_SEED, VAULT_SEED,
     },
     solana_clock::Clock,
     solana_keypair::Keypair,
@@ -71,6 +72,33 @@ fn oracle_pda() -> Pubkey {
     Pubkey::find_program_address(&[ORACLE_SEED], &nft_staking_core::id()).0
 }
 
+fn vault_pda() -> Pubkey {
+    Pubkey::find_program_address(&[VAULT_SEED], &nft_staking_core::id()).0
+}
+
+fn fund_vault(svm: &mut LiteSVM, funder: &Keypair, amount: u64) {
+    send(
+        svm,
+        funder,
+        &[],
+        Instruction {
+            program_id: nft_staking_core::id(),
+            accounts: nft_staking_core::accounts::FundVault {
+                funder: funder.pubkey(),
+                oracle: oracle_pda(),
+                vault: vault_pda(),
+                system_program: SYSTEM_PROGRAM_ID,
+            }
+            .to_account_metas(None),
+            data: nft_staking_core::instruction::FundVault { amount }.data(),
+        },
+    );
+}
+
+fn lamports(svm: &LiteSVM, address: &Pubkey) -> u64 {
+    svm.get_account(address).map_or(0, |a| a.lamports)
+}
+
 fn initialize_oracle(svm: &mut LiteSVM, payer: &Keypair) {
     send(
         svm,
@@ -81,6 +109,7 @@ fn initialize_oracle(svm: &mut LiteSVM, payer: &Keypair) {
             accounts: nft_staking_core::accounts::InitializeOracle {
                 payer: payer.pubkey(),
                 oracle: oracle_pda(),
+                vault: vault_pda(),
                 system_program: SYSTEM_PROGRAM_ID,
             }
             .to_account_metas(None),
@@ -95,6 +124,8 @@ fn update_oracle_ix(cranker: &Pubkey) -> Instruction {
         accounts: nft_staking_core::accounts::UpdateOracle {
             cranker: *cranker,
             oracle: oracle_pda(),
+            vault: vault_pda(),
+            system_program: SYSTEM_PROGRAM_ID,
         }
         .to_account_metas(None),
         data: nft_staking_core::instruction::UpdateOracle {}.data(),
@@ -830,4 +861,194 @@ fn transfer_without_oracle_account_fails() {
         transfer_ix_without_oracle(&payer.pubkey(), &fx, &asset, &recipient),
     );
     assert!(result.is_err());
+}
+
+fn transfer_nft_ix(owner: &Pubkey, fx: &Fixture, asset: &Pubkey, new_owner: &Pubkey) -> Instruction {
+    Instruction {
+        program_id: nft_staking_core::id(),
+        accounts: nft_staking_core::accounts::TransferNft {
+            owner: *owner,
+            asset: *asset,
+            collection: fx.collection,
+            new_owner: *new_owner,
+            oracle: oracle_pda(),
+            system_program: SYSTEM_PROGRAM_ID,
+            core_program: CORE_PROGRAM_ID,
+        }
+        .to_account_metas(None),
+        data: nft_staking_core::instruction::TransferNft {}.data(),
+    }
+}
+
+#[test]
+fn transfer_nft_inside_hours() {
+    let (mut svm, payer, fx, asset) = staking_setup();
+    let recipient = Keypair::new().pubkey();
+    send(
+        &mut svm,
+        &payer,
+        &[],
+        transfer_nft_ix(&payer.pubkey(), &fx, &asset, &recipient),
+    );
+    assert_eq!(asset_data(&svm, &asset).owner, recipient);
+}
+
+#[test]
+fn transfer_nft_blocked_after_close_crank() {
+    let (mut svm, payer, fx, asset) = staking_setup();
+    set_clock(&mut svm, at(17, 0));
+    crank(&mut svm, &payer);
+
+    let recipient = Keypair::new().pubkey();
+    let result = try_send(
+        &mut svm,
+        &payer,
+        &[],
+        transfer_nft_ix(&payer.pubkey(), &fx, &asset, &recipient),
+    );
+    assert!(result.is_err());
+    assert_eq!(asset_data(&svm, &asset).owner, payer.pubkey());
+}
+
+#[test]
+fn transfer_nft_of_staked_nft_fails_even_in_hours() {
+    let (mut svm, payer, fx, asset) = staking_setup();
+    send(&mut svm, &payer, &[], stake_ix(&payer.pubkey(), &fx, &asset));
+
+    let recipient = Keypair::new().pubkey();
+    let result = try_send(
+        &mut svm,
+        &payer,
+        &[],
+        transfer_nft_ix(&payer.pubkey(), &fx, &asset, &recipient),
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn non_owner_cannot_transfer_nft() {
+    let (mut svm, payer, fx, asset) = staking_setup();
+    let stranger = Keypair::new();
+    svm.airdrop(&stranger.pubkey(), 1_000_000_000).unwrap();
+
+    let result = try_send(
+        &mut svm,
+        &stranger,
+        &[],
+        transfer_nft_ix(&stranger.pubkey(), &fx, &asset, &stranger.pubkey()),
+    );
+    assert!(result.is_err());
+    assert_eq!(asset_data(&svm, &asset).owner, payer.pubkey());
+}
+
+#[test]
+fn new_owner_can_stake_after_transfer_nft() {
+    let (mut svm, payer, fx, asset) = staking_setup();
+    let recipient = Keypair::new();
+    svm.airdrop(&recipient.pubkey(), 1_000_000_000).unwrap();
+    send(
+        &mut svm,
+        &payer,
+        &[],
+        transfer_nft_ix(&payer.pubkey(), &fx, &asset, &recipient.pubkey()),
+    );
+
+    send(
+        &mut svm,
+        &recipient,
+        &[],
+        stake_ix(&recipient.pubkey(), &fx, &asset),
+    );
+    assert!(is_frozen(&svm, &asset));
+    assert_eq!(total_staked(&svm, &fx.collection), 1);
+}
+
+const VAULT_FUNDING: u64 = 100_000_000;
+
+/// Funded vault plus a fresh cranker; the payer covers tx fees so the cranker's balance
+/// changes only by the reward.
+fn crank_setup() -> (LiteSVM, Keypair, Keypair) {
+    let (mut svm, payer) = setup();
+    fund_vault(&mut svm, &payer, VAULT_FUNDING);
+    let cranker = Keypair::new();
+    svm.airdrop(&cranker.pubkey(), 1_000_000_000).unwrap();
+    (svm, payer, cranker)
+}
+
+fn crank_as(svm: &mut LiteSVM, payer: &Keypair, cranker: &Keypair) {
+    send(svm, payer, &[cranker], update_oracle_ix(&cranker.pubkey()));
+}
+
+#[test]
+fn crank_at_close_boundary_is_paid() {
+    let (mut svm, payer, cranker) = crank_setup();
+    let before = lamports(&svm, &cranker.pubkey());
+
+    set_clock(&mut svm, at(17, 0) + 30);
+    crank_as(&mut svm, &payer, &cranker);
+
+    assert_eq!(oracle_transfer_result(&svm), ExternalValidationResult::Rejected);
+    assert_eq!(lamports(&svm, &cranker.pubkey()), before + CRANK_REWARD_LAMPORTS);
+    assert_eq!(lamports(&svm, &vault_pda()), VAULT_FUNDING - CRANK_REWARD_LAMPORTS);
+}
+
+#[test]
+fn crank_at_open_boundary_is_paid() {
+    let (mut svm, payer, cranker) = crank_setup();
+    set_clock(&mut svm, at(17, 0) + 30);
+    crank(&mut svm, &payer);
+
+    let before = lamports(&svm, &cranker.pubkey());
+    set_clock(&mut svm, at(17, 0) + 16 * 3_600 + 60); // 09:01 next day
+    crank_as(&mut svm, &payer, &cranker);
+
+    assert_eq!(oracle_transfer_result(&svm), ExternalValidationResult::Pass);
+    assert_eq!(lamports(&svm, &cranker.pubkey()), before + CRANK_REWARD_LAMPORTS);
+}
+
+#[test]
+fn repeat_crank_without_flip_is_unpaid() {
+    let (mut svm, payer, cranker) = crank_setup();
+    set_clock(&mut svm, at(17, 0) + 30);
+    crank(&mut svm, &payer);
+
+    let vault_before = lamports(&svm, &vault_pda());
+    set_clock(&mut svm, at(17, 0) + 60);
+    crank_as(&mut svm, &payer, &cranker);
+    assert_eq!(lamports(&svm, &vault_pda()), vault_before);
+}
+
+#[test]
+fn late_flip_updates_but_is_unpaid() {
+    let (mut svm, payer, cranker) = crank_setup();
+    set_clock(&mut svm, at(20, 0));
+    crank_as(&mut svm, &payer, &cranker);
+
+    assert_eq!(oracle_transfer_result(&svm), ExternalValidationResult::Rejected);
+    assert_eq!(lamports(&svm, &vault_pda()), VAULT_FUNDING);
+}
+
+#[test]
+fn underfunded_vault_still_updates_oracle() {
+    let (mut svm, payer) = setup();
+    // Rent-exempt minimum for a 0-byte account plus less than one reward.
+    let rent_floor = svm.minimum_balance_for_rent_exemption(0);
+    fund_vault(&mut svm, &payer, rent_floor + CRANK_REWARD_LAMPORTS / 2);
+
+    set_clock(&mut svm, at(17, 0) + 30);
+    crank(&mut svm, &payer);
+
+    assert_eq!(oracle_transfer_result(&svm), ExternalValidationResult::Rejected);
+    assert_eq!(
+        lamports(&svm, &vault_pda()),
+        rent_floor + CRANK_REWARD_LAMPORTS / 2
+    );
+}
+
+#[test]
+fn crank_with_empty_vault_still_updates_oracle() {
+    let (mut svm, payer) = setup();
+    set_clock(&mut svm, at(17, 0));
+    crank(&mut svm, &payer);
+    assert_eq!(oracle_transfer_result(&svm), ExternalValidationResult::Rejected);
 }

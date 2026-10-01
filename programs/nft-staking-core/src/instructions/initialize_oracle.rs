@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-use crate::{oracle::validation_at, TransferOracle, ORACLE_SEED};
+use crate::{oracle::validation_at, TransferOracle, ORACLE_SEED, VAULT_SEED};
 
 #[derive(Accounts)]
 pub struct InitializeOracle<'info> {
@@ -16,6 +16,10 @@ pub struct InitializeOracle<'info> {
     )]
     pub oracle: Account<'info, TransferOracle>,
 
+    /// Data-less, system-owned PDA holding crank rewards; funded via `fund_vault`.
+    #[account(seeds = [VAULT_SEED], bump)]
+    pub vault: SystemAccount<'info>,
+
     pub system_program: Program<'info, System>,
 }
 
@@ -24,6 +28,7 @@ impl InitializeOracle<'_> {
         self.oracle.set_inner(TransferOracle {
             validation: validation_at(Clock::get()?.unix_timestamp),
             bump: bumps.oracle,
+            vault_bump: bumps.vault,
         });
         Ok(())
     }

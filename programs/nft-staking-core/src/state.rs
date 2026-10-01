@@ -40,4 +40,5 @@ pub enum OracleValidation {
 pub struct TransferOracle {
     pub validation: OracleValidation,
     pub bump: u8,
+    pub vault_bump: u8,
 }

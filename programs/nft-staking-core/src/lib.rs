@@ -26,6 +26,8 @@ declare_id!("814Q7NeEeZSJ3k1fDorbfKdd2tUrKCBzCFMcUeEhXYLH");
 //
 // Transfers: the collection carries an Oracle adapter pointing at the global oracle PDA.
 // A permissionless crank writes Pass (09:00-17:00 UTC) or Rejected into it for Transfer.
+// transfer_nft forwards the oracle to Core as a remaining account; Core enforces the result.
+// The crank is paid from a vault PDA only when it flips the state within 5 min of a boundary.
 
 #[program]
 pub mod nft_staking_core {
@@ -83,5 +85,15 @@ pub mod nft_staking_core {
     #[instruction(discriminator = 8)]
     pub fn update_oracle(ctx: Context<UpdateOracle>) -> Result<()> {
         ctx.accounts.update_oracle()
+    }
+
+    #[instruction(discriminator = 9)]
+    pub fn transfer_nft(ctx: Context<TransferNft>) -> Result<()> {
+        ctx.accounts.transfer_nft()
+    }
+
+    #[instruction(discriminator = 10)]
+    pub fn fund_vault(ctx: Context<FundVault>, amount: u64) -> Result<()> {
+        ctx.accounts.fund_vault(amount)
     }
 }

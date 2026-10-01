@@ -19,6 +19,13 @@ pub const OPEN_HOUR: i64 = 9;
 pub const CLOSE_HOUR: i64 = 17;
 pub const SECONDS_PER_HOUR: i64 = 3_600;
 
+#[constant]
+pub const VAULT_SEED: &[u8] = b"vault";
+
+/// Paid from the vault to whoever flips the oracle within the window after a boundary.
+pub const CRANK_REWARD_LAMPORTS: u64 = 1_000_000;
+pub const CRANK_WINDOW_SECONDS: i64 = 300;
+
 pub const SECONDS_PER_DAY: i64 = 86_400;
 
 /// Burning a staked NFT pays this many days of rewards on top of what has accrued.
