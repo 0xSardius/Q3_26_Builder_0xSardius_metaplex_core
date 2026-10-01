@@ -325,6 +325,7 @@ fn create_collection_sets_pda_update_authority() {
     let collection = collection_data(&svm, &fx.collection);
     assert_eq!(collection.update_authority, fx.update_authority);
     assert_eq!(collection.num_minted, 0);
+    assert_eq!(total_staked(&svm, &fx.collection), 0);
 }
 
 #[test]
@@ -614,4 +615,48 @@ fn non_owner_cannot_burn() {
     );
     assert!(result.is_err());
     assert!(!is_burned(&svm, &asset));
+}
+
+fn total_staked(svm: &LiteSVM, collection: &Pubkey) -> u64 {
+    let account = svm.get_account(collection).unwrap();
+    mpl_core::Collection::deserialize(&account.data)
+        .unwrap()
+        .plugin_list
+        .attributes
+        .expect("collection has no Attributes plugin")
+        .attributes
+        .attribute_list
+        .into_iter()
+        .find(|a| a.key == nft_staking_core::TOTAL_STAKED_KEY)
+        .expect("missing total_staked")
+        .value
+        .parse()
+        .unwrap()
+}
+
+#[test]
+fn total_staked_tracks_stake_unstake_and_burn() {
+    let (mut svm, payer, fx, first) = staking_setup();
+    let second = mint_nft(&mut svm, &payer, &fx);
+    let third = mint_nft(&mut svm, &payer, &fx);
+
+    for asset in [&first, &second, &third] {
+        send(&mut svm, &payer, &[], stake_ix(&payer.pubkey(), &fx, asset));
+    }
+    assert_eq!(total_staked(&svm, &fx.collection), 3);
+
+    set_clock(&mut svm, START + DAY);
+    send(&mut svm, &payer, &[], claim_ix(&payer.pubkey(), &fx, &first));
+    assert_eq!(total_staked(&svm, &fx.collection), 3);
+
+    send(&mut svm, &payer, &[], unstake_ix(&payer.pubkey(), &fx, &first));
+    assert_eq!(total_staked(&svm, &fx.collection), 2);
+
+    send(&mut svm, &payer, &[], burn_ix(&payer.pubkey(), &fx, &second));
+    assert_eq!(total_staked(&svm, &fx.collection), 1);
+
+    // A failed stake (already staked) must not move the counter.
+    let result = try_send(&mut svm, &payer, &[], stake_ix(&payer.pubkey(), &fx, &third));
+    assert!(result.is_err());
+    assert_eq!(total_staked(&svm, &fx.collection), 1);
 }

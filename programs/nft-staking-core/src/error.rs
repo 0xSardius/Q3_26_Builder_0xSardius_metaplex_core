@@ -16,6 +16,8 @@ pub enum ErrorCode {
     StakeLocked,
     #[msg("No rewards have accrued since the last claim")]
     NothingToClaim,
+    #[msg("Collection is missing its total_staked Attribute")]
+    CollectionStatsMissing,
     #[msg("Arithmetic overflow")]
     Overflow,
 }

@@ -21,3 +21,6 @@ pub const STAKED_AT_KEY: &str = "staked_at";
 
 /// Attribute key on each asset: unix timestamp rewards accrue from.
 pub const LAST_CLAIMED_AT_KEY: &str = "last_claimed_at";
+
+/// Attribute key on the collection: number of its assets currently staked.
+pub const TOTAL_STAKED_KEY: &str = "total_staked";

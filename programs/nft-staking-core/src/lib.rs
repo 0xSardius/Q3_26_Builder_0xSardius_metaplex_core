@@ -21,6 +21,7 @@ declare_id!("814Q7NeEeZSJ3k1fDorbfKdd2tUrKCBzCFMcUeEhXYLH");
 // unstake: thaw + remove both delegates, reset "staked_at", mint accrued rewards
 // claim:   mint rewards since "last_claimed_at", move that checkpoint; stays frozen
 // burn:    thaw, burn via BurnDelegate, mint accrued rewards + a one-time bonus
+// The collection's own Attributes["total_staked"] goes +1 on stake, -1 on unstake and burn.
 
 #[program]
 pub mod nft_staking_core {

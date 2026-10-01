@@ -10,7 +10,10 @@ use mpl_core::{
 };
 
 use crate::{
-    attributes::{assert_asset, asset_attributes, rewards_since, set_attribute, staked_at},
+    attributes::{
+        adjust_total_staked, assert_asset, asset_attributes, rewards_since, set_attribute,
+        staked_at,
+    },
     error::ErrorCode,
     rewards::{accrued_rewards, mint_rewards},
     Config, CONFIG_SEED, LAST_CLAIMED_AT_KEY, REWARDS_SEED, STAKED_AT_KEY,
@@ -116,6 +119,16 @@ impl Unstake<'_> {
             .system_program(&self.system_program.to_account_info())
             .plugin(Plugin::Attributes(Attributes { attribute_list }))
             .invoke_signed(signer_seeds)?;
+
+        adjust_total_staked(
+            &self.core_program.to_account_info(),
+            &self.collection.to_account_info(),
+            &self.owner.to_account_info(),
+            &self.update_authority.to_account_info(),
+            &self.system_program.to_account_info(),
+            signer_seeds,
+            -1,
+        )?;
 
         mint_rewards(
             &self.token_program,

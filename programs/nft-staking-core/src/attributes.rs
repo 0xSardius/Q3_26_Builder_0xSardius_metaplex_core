@@ -1,11 +1,12 @@
 use anchor_lang::prelude::*;
 use mpl_core::{
-    accounts::BaseAssetV1,
+    accounts::{BaseAssetV1, BaseCollectionV1},
     fetch_plugin,
-    types::{Attribute, Attributes, PluginType, UpdateAuthority},
+    instructions::UpdateCollectionPluginV1CpiBuilder,
+    types::{Attribute, Attributes, Plugin, PluginType, UpdateAuthority},
 };
 
-use crate::{error::ErrorCode, LAST_CLAIMED_AT_KEY, STAKED_AT_KEY};
+use crate::{error::ErrorCode, LAST_CLAIMED_AT_KEY, STAKED_AT_KEY, TOTAL_STAKED_KEY};
 
 /// Checks the asset belongs to `collection` and is owned by `owner`.
 pub fn assert_asset(asset: &AccountInfo, collection: &Pubkey, owner: &Pubkey) -> Result<()> {
@@ -57,4 +58,37 @@ pub fn staked_at(list: &[Attribute]) -> Option<i64> {
 pub fn rewards_since(list: &[Attribute]) -> Option<i64> {
     let staked_at = staked_at(list)?;
     Some(timestamp(list, LAST_CLAIMED_AT_KEY).map_or(staked_at, |ts| ts.max(staked_at)))
+}
+
+/// Adds `delta` to the collection's "total_staked" Attribute, signed by the update authority PDA.
+pub fn adjust_total_staked<'info>(
+    core_program: &AccountInfo<'info>,
+    collection: &AccountInfo<'info>,
+    payer: &AccountInfo<'info>,
+    update_authority: &AccountInfo<'info>,
+    system_program: &AccountInfo<'info>,
+    signer_seeds: &[&[&[u8]]],
+    delta: i64,
+) -> Result<()> {
+    let (_, attributes, _) =
+        fetch_plugin::<BaseCollectionV1, Attributes>(collection, PluginType::Attributes)
+            .map_err(|_| error!(ErrorCode::CollectionStatsMissing))?;
+    let mut attribute_list = attributes.attribute_list;
+
+    let current = get_attribute(&attribute_list, TOTAL_STAKED_KEY)
+        .and_then(|v| v.parse::<u64>().ok())
+        .ok_or(ErrorCode::CollectionStatsMissing)?;
+    let updated = current
+        .checked_add_signed(delta)
+        .ok_or(ErrorCode::Overflow)?;
+    set_attribute(&mut attribute_list, TOTAL_STAKED_KEY, updated.to_string());
+
+    UpdateCollectionPluginV1CpiBuilder::new(core_program)
+        .collection(collection)
+        .payer(payer)
+        .authority(Some(update_authority))
+        .system_program(system_program)
+        .plugin(Plugin::Attributes(Attributes { attribute_list }))
+        .invoke_signed(signer_seeds)?;
+    Ok(())
 }

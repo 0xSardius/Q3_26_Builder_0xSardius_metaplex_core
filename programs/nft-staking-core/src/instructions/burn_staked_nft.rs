@@ -10,7 +10,7 @@ use mpl_core::{
 };
 
 use crate::{
-    attributes::{assert_asset, asset_attributes, rewards_since},
+    attributes::{adjust_total_staked, assert_asset, asset_attributes, rewards_since},
     error::ErrorCode,
     rewards::{accrued_rewards, mint_rewards},
     Config, BURN_BONUS_DAYS, CONFIG_SEED, REWARDS_SEED, UPDATE_AUTHORITY_SEED,
@@ -104,6 +104,16 @@ impl BurnStakedNft<'_> {
             .authority(Some(&self.update_authority.to_account_info()))
             .system_program(Some(&self.system_program.to_account_info()))
             .invoke_signed(signer_seeds)?;
+
+        adjust_total_staked(
+            &self.core_program.to_account_info(),
+            &self.collection.to_account_info(),
+            &self.owner.to_account_info(),
+            &self.update_authority.to_account_info(),
+            &self.system_program.to_account_info(),
+            signer_seeds,
+            -1,
+        )?;
 
         mint_rewards(
             &self.token_program,

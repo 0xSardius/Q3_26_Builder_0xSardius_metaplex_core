@@ -1,7 +1,11 @@
 use anchor_lang::prelude::*;
-use mpl_core::{instructions::CreateCollectionV2CpiBuilder, ID as CORE_PROGRAM_ID};
+use mpl_core::{
+    instructions::CreateCollectionV2CpiBuilder,
+    types::{Attribute, Attributes, Plugin, PluginAuthorityPair},
+    ID as CORE_PROGRAM_ID,
+};
 
-use crate::UPDATE_AUTHORITY_SEED;
+use crate::{TOTAL_STAKED_KEY, UPDATE_AUTHORITY_SEED};
 
 #[derive(Accounts)]
 pub struct CreateCollection<'info> {
@@ -25,6 +29,17 @@ pub struct CreateCollection<'info> {
 
 impl CreateCollection<'_> {
     pub fn create_collection(&self, name: String, uri: String) -> Result<()> {
+        // `authority: None` defaults Attributes to the collection's update authority (our PDA).
+        let stats = PluginAuthorityPair {
+            plugin: Plugin::Attributes(Attributes {
+                attribute_list: vec![Attribute {
+                    key: TOTAL_STAKED_KEY.to_string(),
+                    value: "0".to_string(),
+                }],
+            }),
+            authority: None,
+        };
+
         CreateCollectionV2CpiBuilder::new(&self.core_program.to_account_info())
             .collection(&self.collection.to_account_info())
             .update_authority(Some(&self.update_authority.to_account_info()))
@@ -32,6 +47,7 @@ impl CreateCollection<'_> {
             .system_program(&self.system_program.to_account_info())
             .name(name)
             .uri(uri)
+            .plugins(vec![stats])
             .invoke()?;
         Ok(())
     }

@@ -6,7 +6,7 @@ use mpl_core::{
 };
 
 use crate::{
-    attributes::{assert_asset, asset_attributes, set_attribute, staked_at},
+    attributes::{adjust_total_staked, assert_asset, asset_attributes, set_attribute, staked_at},
     error::ErrorCode,
     Config, CONFIG_SEED, LAST_CLAIMED_AT_KEY, STAKED_AT_KEY, UPDATE_AUTHORITY_SEED,
 };
@@ -108,6 +108,14 @@ impl Stake<'_> {
             })
             .invoke()?;
 
-        Ok(())
+        adjust_total_staked(
+            &self.core_program.to_account_info(),
+            &self.collection.to_account_info(),
+            &self.owner.to_account_info(),
+            &self.update_authority.to_account_info(),
+            &self.system_program.to_account_info(),
+            signer_seeds,
+            1,
+        )
     }
 }
