@@ -2,6 +2,7 @@ pub mod attributes;
 pub mod constants;
 pub mod error;
 pub mod instructions;
+pub mod oracle;
 pub mod rewards;
 pub mod state;
 
@@ -22,6 +23,9 @@ declare_id!("814Q7NeEeZSJ3k1fDorbfKdd2tUrKCBzCFMcUeEhXYLH");
 // claim:   mint rewards since "last_claimed_at", move that checkpoint; stays frozen
 // burn:    thaw, burn via BurnDelegate, mint accrued rewards + a one-time bonus
 // The collection's own Attributes["total_staked"] goes +1 on stake, -1 on unstake and burn.
+//
+// Transfers: the collection carries an Oracle adapter pointing at the global oracle PDA.
+// A permissionless crank writes Pass (09:00-17:00 UTC) or Rejected into it for Transfer.
 
 #[program]
 pub mod nft_staking_core {
@@ -69,5 +73,15 @@ pub mod nft_staking_core {
     #[instruction(discriminator = 6)]
     pub fn burn_staked_nft(ctx: Context<BurnStakedNft>) -> Result<()> {
         ctx.accounts.burn_staked_nft(&ctx.bumps)
+    }
+
+    #[instruction(discriminator = 7)]
+    pub fn initialize_oracle(ctx: Context<InitializeOracle>) -> Result<()> {
+        ctx.accounts.initialize_oracle(&ctx.bumps)
+    }
+
+    #[instruction(discriminator = 8)]
+    pub fn update_oracle(ctx: Context<UpdateOracle>) -> Result<()> {
+        ctx.accounts.update_oracle()
     }
 }

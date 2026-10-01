@@ -1,6 +1,9 @@
 use {
     anchor_lang::{
-        solana_program::{instruction::Instruction, program_pack::Pack},
+        solana_program::{
+            instruction::{AccountMeta, Instruction},
+            program_pack::Pack,
+        },
         system_program::ID as SYSTEM_PROGRAM_ID,
         InstructionData, ToAccountMetas,
     },
@@ -9,13 +12,16 @@ use {
         token::{spl_token, ID as TOKEN_PROGRAM_ID},
     },
     litesvm::LiteSVM,
+    anchor_lang::AnchorDeserialize,
     mpl_core::{
         accounts::{BaseAssetV1, BaseCollectionV1},
         instructions::TransferV1Builder,
-        types::UpdateAuthority,
+        types::{ExternalValidationResult, OracleValidation, UpdateAuthority},
         Asset, ID as CORE_PROGRAM_ID,
     },
-    nft_staking_core::{CONFIG_SEED, REWARDS_SEED, STAKED_AT_KEY, UPDATE_AUTHORITY_SEED},
+    nft_staking_core::{
+        CONFIG_SEED, ORACLE_SEED, REWARDS_SEED, STAKED_AT_KEY, UPDATE_AUTHORITY_SEED,
+    },
     solana_clock::Clock,
     solana_keypair::Keypair,
     solana_message::Message,
@@ -55,8 +61,53 @@ fn setup() -> (LiteSVM, Keypair) {
 
     svm.airdrop(&payer.pubkey(), 10_000_000_000).unwrap();
     // LiteSVM's clock starts at 0, which the program reads as "not staked".
+    // START is 14:13 UTC, inside the transfer window.
     set_clock(&mut svm, START);
+    initialize_oracle(&mut svm, &payer);
     (svm, payer)
+}
+
+fn oracle_pda() -> Pubkey {
+    Pubkey::find_program_address(&[ORACLE_SEED], &nft_staking_core::id()).0
+}
+
+fn initialize_oracle(svm: &mut LiteSVM, payer: &Keypair) {
+    send(
+        svm,
+        payer,
+        &[],
+        Instruction {
+            program_id: nft_staking_core::id(),
+            accounts: nft_staking_core::accounts::InitializeOracle {
+                payer: payer.pubkey(),
+                oracle: oracle_pda(),
+                system_program: SYSTEM_PROGRAM_ID,
+            }
+            .to_account_metas(None),
+            data: nft_staking_core::instruction::InitializeOracle {}.data(),
+        },
+    );
+}
+
+fn update_oracle_ix(cranker: &Pubkey) -> Instruction {
+    Instruction {
+        program_id: nft_staking_core::id(),
+        accounts: nft_staking_core::accounts::UpdateOracle {
+            cranker: *cranker,
+            oracle: oracle_pda(),
+        }
+        .to_account_metas(None),
+        data: nft_staking_core::instruction::UpdateOracle {}.data(),
+    }
+}
+
+/// Decodes the oracle account with Core's own type, proving our mirror's layout matches.
+fn oracle_transfer_result(svm: &LiteSVM) -> ExternalValidationResult {
+    let account = svm.get_account(&oracle_pda()).unwrap();
+    match OracleValidation::deserialize(&mut &account.data[8..]).unwrap() {
+        OracleValidation::V1 { transfer, .. } => transfer,
+        OracleValidation::Uninitialized => panic!("oracle uninitialized"),
+    }
 }
 
 fn send(svm: &mut LiteSVM, payer: &Keypair, extra: &[&Keypair], ix: Instruction) {
@@ -107,6 +158,7 @@ fn create_collection(svm: &mut LiteSVM, payer: &Keypair) -> Fixture {
                 creator: payer.pubkey(),
                 collection: collection.pubkey(),
                 update_authority,
+                oracle: oracle_pda(),
                 system_program: SYSTEM_PROGRAM_ID,
                 core_program: CORE_PROGRAM_ID,
             }
@@ -268,7 +320,24 @@ fn burn_ix(owner: &Pubkey, fx: &Fixture, asset: &Pubkey) -> Instruction {
     }
 }
 
+/// Direct Core transfer. The collection's Oracle adapter needs the oracle account
+/// passed as a remaining account so Core can read its validation result.
 fn transfer_ix(owner: &Pubkey, fx: &Fixture, asset: &Pubkey, new_owner: &Pubkey) -> Instruction {
+    TransferV1Builder::new()
+        .asset(*asset)
+        .collection(Some(fx.collection))
+        .payer(*owner)
+        .new_owner(*new_owner)
+        .add_remaining_account(AccountMeta::new_readonly(oracle_pda(), false))
+        .instruction()
+}
+
+fn transfer_ix_without_oracle(
+    owner: &Pubkey,
+    fx: &Fixture,
+    asset: &Pubkey,
+    new_owner: &Pubkey,
+) -> Instruction {
     TransferV1Builder::new()
         .asset(*asset)
         .collection(Some(fx.collection))
@@ -659,4 +728,106 @@ fn total_staked_tracks_stake_unstake_and_burn() {
     let result = try_send(&mut svm, &payer, &[], stake_ix(&payer.pubkey(), &fx, &third));
     assert!(result.is_err());
     assert_eq!(total_staked(&svm, &fx.collection), 1);
+}
+
+/// Unix timestamp for `hour:minute` UTC on START's day.
+fn at(hour: i64, minute: i64) -> i64 {
+    START - START.rem_euclid(DAY) + hour * 3_600 + minute * 60
+}
+
+fn crank(svm: &mut LiteSVM, payer: &Keypair) {
+    send(svm, payer, &[], update_oracle_ix(&payer.pubkey()));
+}
+
+#[test]
+fn oracle_layout_is_readable_by_core() {
+    let (svm, _payer) = setup();
+    // Initialized at 14:13 UTC, so Transfer is Pass.
+    assert_eq!(oracle_transfer_result(&svm), ExternalValidationResult::Pass);
+}
+
+#[test]
+fn collection_carries_transfer_oracle_adapter() {
+    let (mut svm, payer) = setup();
+    let fx = create_collection(&mut svm, &payer);
+
+    let account = svm.get_account(&fx.collection).unwrap();
+    let collection = mpl_core::Collection::deserialize(&account.data).unwrap();
+    let oracles = collection.external_plugin_adapter_list.oracles;
+    assert_eq!(oracles.len(), 1);
+    assert_eq!(oracles[0].base_address, oracle_pda());
+}
+
+#[test]
+fn crank_tracks_the_window_boundaries() {
+    let (mut svm, payer) = setup();
+    for (time, expected) in [
+        (at(8, 59), ExternalValidationResult::Rejected),
+        (at(9, 0), ExternalValidationResult::Pass),
+        (at(16, 59), ExternalValidationResult::Pass),
+        (at(17, 0), ExternalValidationResult::Rejected),
+        (at(23, 30), ExternalValidationResult::Rejected),
+    ] {
+        set_clock(&mut svm, time);
+        crank(&mut svm, &payer);
+        assert_eq!(oracle_transfer_result(&svm), expected, "at {time}");
+    }
+}
+
+#[test]
+fn transfer_blocked_outside_hours_once_cranked() {
+    let (mut svm, payer, fx, asset) = staking_setup();
+    set_clock(&mut svm, at(20, 0));
+    crank(&mut svm, &payer);
+
+    let recipient = Keypair::new().pubkey();
+    let result = try_send(
+        &mut svm,
+        &payer,
+        &[],
+        transfer_ix(&payer.pubkey(), &fx, &asset, &recipient),
+    );
+    assert!(result.is_err());
+    assert_eq!(asset_data(&svm, &asset).owner, payer.pubkey());
+
+    // Next morning the crank reopens the window.
+    set_clock(&mut svm, at(20, 0) + 13 * 3_600);
+    crank(&mut svm, &payer);
+    send(
+        &mut svm,
+        &payer,
+        &[],
+        transfer_ix(&payer.pubkey(), &fx, &asset, &recipient),
+    );
+    assert_eq!(asset_data(&svm, &asset).owner, recipient);
+}
+
+#[test]
+fn stale_oracle_is_what_core_enforces() {
+    // Core reads the stored result, not the clock: without a crank at 17:00 the
+    // window effectively stays open. This is why the crank is incentivized.
+    let (mut svm, payer, fx, asset) = staking_setup();
+    set_clock(&mut svm, at(20, 0));
+
+    let recipient = Keypair::new().pubkey();
+    send(
+        &mut svm,
+        &payer,
+        &[],
+        transfer_ix(&payer.pubkey(), &fx, &asset, &recipient),
+    );
+    assert_eq!(asset_data(&svm, &asset).owner, recipient);
+}
+
+#[test]
+fn transfer_without_oracle_account_fails() {
+    let (mut svm, payer, fx, asset) = staking_setup();
+    let recipient = Keypair::new().pubkey();
+    let result = try_send(
+        &mut svm,
+        &payer,
+        &[],
+        transfer_ix_without_oracle(&payer.pubkey(), &fx, &asset, &recipient),
+    );
+    assert!(result.is_err());
 }
