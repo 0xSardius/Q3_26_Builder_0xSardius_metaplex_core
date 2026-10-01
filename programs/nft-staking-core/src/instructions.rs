@@ -15,3 +15,6 @@ pub use unstake::*;
 
 pub mod claim_rewards;
 pub use claim_rewards::*;
+
+pub mod burn_staked_nft;
+pub use burn_staked_nft::*;

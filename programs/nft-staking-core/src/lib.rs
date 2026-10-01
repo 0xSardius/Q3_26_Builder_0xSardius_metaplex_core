@@ -17,9 +17,10 @@ declare_id!("814Q7NeEeZSJ3k1fDorbfKdd2tUrKCBzCFMcUeEhXYLH");
 // The collection's update authority is a program PDA, so this program is the only
 // thing that can mint into the collection or manage its authority-level plugins.
 //
-// stake:   Attributes["staked_at"] = now, FreezeDelegate(frozen) with the PDA as authority
-// unstake: thaw + remove FreezeDelegate, reset "staked_at", mint accrued rewards
+// stake:   Attributes["staked_at"] = now, FreezeDelegate(frozen) + BurnDelegate with the PDA as authority
+// unstake: thaw + remove both delegates, reset "staked_at", mint accrued rewards
 // claim:   mint rewards since "last_claimed_at", move that checkpoint; stays frozen
+// burn:    thaw, burn via BurnDelegate, mint accrued rewards + a one-time bonus
 
 #[program]
 pub mod nft_staking_core {
@@ -62,5 +63,10 @@ pub mod nft_staking_core {
     #[instruction(discriminator = 5)]
     pub fn claim_rewards(ctx: Context<ClaimRewards>) -> Result<()> {
         ctx.accounts.claim_rewards(&ctx.bumps)
+    }
+
+    #[instruction(discriminator = 6)]
+    pub fn burn_staked_nft(ctx: Context<BurnStakedNft>) -> Result<()> {
+        ctx.accounts.burn_staked_nft(&ctx.bumps)
     }
 }

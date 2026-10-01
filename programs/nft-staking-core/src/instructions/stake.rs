@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use mpl_core::{
     instructions::{AddPluginV1CpiBuilder, UpdatePluginV1CpiBuilder},
-    types::{Attributes, FreezeDelegate, Plugin, PluginAuthority},
+    types::{Attributes, BurnDelegate, FreezeDelegate, Plugin, PluginAuthority},
     ID as CORE_PROGRAM_ID,
 };
 
@@ -90,6 +90,19 @@ impl Stake<'_> {
             .authority(Some(&self.owner.to_account_info()))
             .system_program(&self.system_program.to_account_info())
             .plugin(Plugin::FreezeDelegate(FreezeDelegate { frozen: true }))
+            .init_authority(PluginAuthority::Address {
+                address: self.update_authority.key(),
+            })
+            .invoke()?;
+
+        // Also owner-managed: lets the program burn the asset in `burn_staked_nft`.
+        AddPluginV1CpiBuilder::new(&self.core_program.to_account_info())
+            .asset(&asset)
+            .collection(Some(&self.collection.to_account_info()))
+            .payer(&self.owner.to_account_info())
+            .authority(Some(&self.owner.to_account_info()))
+            .system_program(&self.system_program.to_account_info())
+            .plugin(Plugin::BurnDelegate(BurnDelegate {}))
             .init_authority(PluginAuthority::Address {
                 address: self.update_authority.key(),
             })

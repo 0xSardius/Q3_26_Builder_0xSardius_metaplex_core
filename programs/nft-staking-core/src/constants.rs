@@ -13,6 +13,9 @@ pub const REWARDS_DECIMALS: u8 = 6;
 
 pub const SECONDS_PER_DAY: i64 = 86_400;
 
+/// Burning a staked NFT pays this many days of rewards on top of what has accrued.
+pub const BURN_BONUS_DAYS: u64 = 365;
+
 /// Attribute key on each asset: unix timestamp the stake began, or "0" when unstaked.
 pub const STAKED_AT_KEY: &str = "staked_at";
 

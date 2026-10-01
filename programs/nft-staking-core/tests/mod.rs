@@ -247,6 +247,27 @@ fn claim_ix(owner: &Pubkey, fx: &Fixture, asset: &Pubkey) -> Instruction {
     }
 }
 
+fn burn_ix(owner: &Pubkey, fx: &Fixture, asset: &Pubkey) -> Instruction {
+    Instruction {
+        program_id: nft_staking_core::id(),
+        accounts: nft_staking_core::accounts::BurnStakedNft {
+            owner: *owner,
+            asset: *asset,
+            collection: fx.collection,
+            update_authority: fx.update_authority,
+            config: fx.config,
+            rewards_mint: fx.rewards_mint,
+            owner_rewards_ata: get_associated_token_address(owner, &fx.rewards_mint),
+            token_program: TOKEN_PROGRAM_ID,
+            associated_token_program: ASSOCIATED_TOKEN_PROGRAM_ID,
+            system_program: SYSTEM_PROGRAM_ID,
+            core_program: CORE_PROGRAM_ID,
+        }
+        .to_account_metas(None),
+        data: nft_staking_core::instruction::BurnStakedNft {}.data(),
+    }
+}
+
 fn transfer_ix(owner: &Pubkey, fx: &Fixture, asset: &Pubkey, new_owner: &Pubkey) -> Instruction {
     TransferV1Builder::new()
         .asset(*asset)
@@ -365,6 +386,7 @@ fn stake_freezes_and_records_timestamp() {
     send(&mut svm, &payer, &[], stake_ix(&payer.pubkey(), &fx, &asset));
 
     assert!(is_frozen(&svm, &asset));
+    assert!(full_asset(&svm, &asset).plugin_list.burn_delegate.is_some());
     assert_eq!(staked_at_attr(&svm, &asset), Some(START.to_string()));
     // Owner still owns it; staking is in-place, no custody transfer.
     assert_eq!(asset_data(&svm, &asset).owner, payer.pubkey());
@@ -427,7 +449,9 @@ fn unstake_thaws_and_pays_rewards() {
     set_clock(&mut svm, START + 2 * DAY);
     send(&mut svm, &payer, &[], unstake_ix(&payer.pubkey(), &fx, &asset));
 
-    assert!(full_asset(&svm, &asset).plugin_list.freeze_delegate.is_none());
+    let plugins = full_asset(&svm, &asset).plugin_list;
+    assert!(plugins.freeze_delegate.is_none());
+    assert!(plugins.burn_delegate.is_none());
     assert_eq!(staked_at_attr(&svm, &asset), Some("0".to_string()));
     let ata = get_associated_token_address(&payer.pubkey(), &fx.rewards_mint);
     assert_eq!(token_amount(&svm, &ata), 2 * REWARDS_PER_DAY);
@@ -526,4 +550,68 @@ fn claim_on_unstaked_nft_fails() {
     let (mut svm, payer, fx, asset) = staking_setup();
     let result = try_send(&mut svm, &payer, &[], claim_ix(&payer.pubkey(), &fx, &asset));
     assert!(result.is_err());
+}
+
+fn is_burned(svm: &LiteSVM, asset: &Pubkey) -> bool {
+    // Core leaves a 1-byte tombstone (Key::Uninitialized) so the address can't be reused.
+    svm.get_account(asset).is_none_or(|a| a.data.len() <= 1)
+}
+
+#[test]
+fn burn_staked_nft_pays_bonus_and_burns() {
+    let (mut svm, payer, fx, asset) = staking_setup();
+    send(&mut svm, &payer, &[], stake_ix(&payer.pubkey(), &fx, &asset));
+
+    set_clock(&mut svm, START + 2 * DAY);
+    send(&mut svm, &payer, &[], burn_ix(&payer.pubkey(), &fx, &asset));
+
+    assert!(is_burned(&svm, &asset));
+    let ata = get_associated_token_address(&payer.pubkey(), &fx.rewards_mint);
+    assert_eq!(
+        token_amount(&svm, &ata),
+        2 * REWARDS_PER_DAY + nft_staking_core::BURN_BONUS_DAYS * REWARDS_PER_DAY
+    );
+    assert_eq!(collection_data(&svm, &fx.collection).current_size, 0);
+}
+
+#[test]
+fn burn_after_claim_only_pays_unclaimed_plus_bonus() {
+    let (mut svm, payer, fx, asset) = staking_setup();
+    send(&mut svm, &payer, &[], stake_ix(&payer.pubkey(), &fx, &asset));
+
+    set_clock(&mut svm, START + DAY);
+    send(&mut svm, &payer, &[], claim_ix(&payer.pubkey(), &fx, &asset));
+    set_clock(&mut svm, START + 2 * DAY);
+    send(&mut svm, &payer, &[], burn_ix(&payer.pubkey(), &fx, &asset));
+
+    let ata = get_associated_token_address(&payer.pubkey(), &fx.rewards_mint);
+    assert_eq!(
+        token_amount(&svm, &ata),
+        2 * REWARDS_PER_DAY + nft_staking_core::BURN_BONUS_DAYS * REWARDS_PER_DAY
+    );
+}
+
+#[test]
+fn burn_unstaked_nft_fails() {
+    let (mut svm, payer, fx, asset) = staking_setup();
+    let result = try_send(&mut svm, &payer, &[], burn_ix(&payer.pubkey(), &fx, &asset));
+    assert!(result.is_err());
+    assert!(!is_burned(&svm, &asset));
+}
+
+#[test]
+fn non_owner_cannot_burn() {
+    let (mut svm, payer, fx, asset) = staking_setup();
+    send(&mut svm, &payer, &[], stake_ix(&payer.pubkey(), &fx, &asset));
+
+    let stranger = Keypair::new();
+    svm.airdrop(&stranger.pubkey(), 1_000_000_000).unwrap();
+    let result = try_send(
+        &mut svm,
+        &stranger,
+        &[],
+        burn_ix(&stranger.pubkey(), &fx, &asset),
+    );
+    assert!(result.is_err());
+    assert!(!is_burned(&svm, &asset));
 }
