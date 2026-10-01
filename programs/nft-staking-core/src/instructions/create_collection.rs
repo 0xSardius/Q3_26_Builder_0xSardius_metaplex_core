@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use anchor_spl::token_interface::{Mint, TokenInterface};
 use mpl_core::{
     instructions::CreateCollectionV2CpiBuilder,
     types::{
@@ -8,8 +9,13 @@ use mpl_core::{
     ExternalCheckResultBits, ID as CORE_PROGRAM_ID,
 };
 
-use crate::{ORACLE_SEED, TOTAL_STAKED_KEY, UPDATE_AUTHORITY_SEED};
+use crate::{
+    Config, TransferOracle, CONFIG_SEED, ORACLE_SEED, REWARDS_DECIMALS, REWARDS_SEED,
+    TOTAL_STAKED_KEY, UPDATE_AUTHORITY_SEED,
+};
 
+/// Creates the collection together with its staking config and rewards mint, so no one
+/// else can initialize the config first and pick the reward terms.
 #[derive(Accounts)]
 pub struct CreateCollection<'info> {
     #[account(mut)]
@@ -23,10 +29,31 @@ pub struct CreateCollection<'info> {
     #[account(seeds = [UPDATE_AUTHORITY_SEED, collection.key().as_ref()], bump)]
     pub update_authority: UncheckedAccount<'info>,
 
-    /// CHECK: only its address is recorded; it may not be initialized yet.
-    #[account(seeds = [ORACLE_SEED], bump)]
-    pub oracle: UncheckedAccount<'info>,
+    #[account(
+        init,
+        payer = creator,
+        seeds = [CONFIG_SEED, collection.key().as_ref()],
+        space = Config::DISCRIMINATOR.len() + Config::INIT_SPACE,
+        bump
+    )]
+    pub config: Account<'info, Config>,
 
+    #[account(
+        init,
+        payer = creator,
+        seeds = [REWARDS_SEED, config.key().as_ref()],
+        bump,
+        mint::decimals = REWARDS_DECIMALS,
+        mint::authority = config,
+        mint::token_program = token_program
+    )]
+    pub rewards_mint: InterfaceAccount<'info, Mint>,
+
+    /// Must already exist: the collection's Transfer checks fail without it.
+    #[account(seeds = [ORACLE_SEED], bump = oracle.bump)]
+    pub oracle: Account<'info, TransferOracle>,
+
+    pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 
     /// CHECK: pinned to the Core program id.
@@ -35,7 +62,22 @@ pub struct CreateCollection<'info> {
 }
 
 impl CreateCollection<'_> {
-    pub fn create_collection(&self, name: String, uri: String) -> Result<()> {
+    pub fn create_collection(
+        &mut self,
+        name: String,
+        uri: String,
+        rewards_per_day: u64,
+        min_stake_duration: i64,
+        bumps: &CreateCollectionBumps,
+    ) -> Result<()> {
+        self.config.set_inner(Config {
+            collection: self.collection.key(),
+            rewards_per_day,
+            min_stake_duration,
+            rewards_bump: bumps.rewards_mint,
+            bump: bumps.config,
+        });
+
         // `authority: None` defaults Attributes to the collection's update authority (our PDA).
         let stats = PluginAuthorityPair {
             plugin: Plugin::Attributes(Attributes {

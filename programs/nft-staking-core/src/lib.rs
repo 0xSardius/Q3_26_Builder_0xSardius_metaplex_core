@@ -38,23 +38,21 @@ pub mod nft_staking_core {
         ctx: Context<CreateCollection>,
         name: String,
         uri: String,
+        rewards_per_day: u64,
+        min_stake_duration: i64,
     ) -> Result<()> {
-        ctx.accounts.create_collection(name, uri)
+        ctx.accounts.create_collection(
+            name,
+            uri,
+            rewards_per_day,
+            min_stake_duration,
+            &ctx.bumps,
+        )
     }
 
     #[instruction(discriminator = 1)]
     pub fn mint_nft(ctx: Context<MintNft>, name: String, uri: String) -> Result<()> {
         ctx.accounts.mint_nft(name, uri, &ctx.bumps)
-    }
-
-    #[instruction(discriminator = 2)]
-    pub fn initialize_config(
-        ctx: Context<InitializeConfig>,
-        rewards_per_day: u64,
-        min_stake_duration: i64,
-    ) -> Result<()> {
-        ctx.accounts
-            .initialize_config(rewards_per_day, min_stake_duration, &ctx.bumps)
     }
 
     #[instruction(discriminator = 3)]

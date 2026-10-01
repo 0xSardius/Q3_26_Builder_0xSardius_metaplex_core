@@ -44,6 +44,12 @@ struct Fixture {
 }
 
 fn setup() -> (LiteSVM, Keypair) {
+    let (mut svm, payer) = setup_without_oracle();
+    initialize_oracle(&mut svm, &payer);
+    (svm, payer)
+}
+
+fn setup_without_oracle() -> (LiteSVM, Keypair) {
     let payer = Keypair::new();
     let mut svm = LiteSVM::new();
     let bytes = include_bytes!(concat!(
@@ -64,7 +70,6 @@ fn setup() -> (LiteSVM, Keypair) {
     // LiteSVM's clock starts at 0, which the program reads as "not staked".
     // START is 14:13 UTC, inside the transfer window.
     set_clock(&mut svm, START);
-    initialize_oracle(&mut svm, &payer);
     (svm, payer)
 }
 
@@ -167,6 +172,16 @@ fn set_clock(svm: &mut LiteSVM, unix_timestamp: i64) {
 }
 
 fn create_collection(svm: &mut LiteSVM, payer: &Keypair) -> Fixture {
+    let (result, fx) = try_create_collection(svm, payer);
+    result.unwrap();
+    fx
+}
+
+/// Creates the collection with its config and rewards mint in one instruction.
+fn try_create_collection(
+    svm: &mut LiteSVM,
+    payer: &Keypair,
+) -> (litesvm::types::TransactionResult, Fixture) {
     let collection = Keypair::new();
     let program_id = nft_staking_core::id();
     let update_authority = Pubkey::find_program_address(
@@ -179,7 +194,7 @@ fn create_collection(svm: &mut LiteSVM, payer: &Keypair) -> Fixture {
     let rewards_mint =
         Pubkey::find_program_address(&[REWARDS_SEED, config.as_ref()], &program_id).0;
 
-    send(
+    let result = try_send(
         svm,
         payer,
         &[&collection],
@@ -189,7 +204,10 @@ fn create_collection(svm: &mut LiteSVM, payer: &Keypair) -> Fixture {
                 creator: payer.pubkey(),
                 collection: collection.pubkey(),
                 update_authority,
+                config,
+                rewards_mint,
                 oracle: oracle_pda(),
+                token_program: TOKEN_PROGRAM_ID,
                 system_program: SYSTEM_PROGRAM_ID,
                 core_program: CORE_PROGRAM_ID,
             }
@@ -197,42 +215,22 @@ fn create_collection(svm: &mut LiteSVM, payer: &Keypair) -> Fixture {
             data: nft_staking_core::instruction::CreateCollection {
                 name: "Turbin3 Stakers".to_string(),
                 uri: "https://example.com/collection.json".to_string(),
-            }
-            .data(),
-        },
-    );
-
-    Fixture {
-        collection: collection.pubkey(),
-        update_authority,
-        config,
-        rewards_mint,
-    }
-}
-
-fn initialize_config(svm: &mut LiteSVM, payer: &Keypair, fx: &Fixture) {
-    send(
-        svm,
-        payer,
-        &[],
-        Instruction {
-            program_id: nft_staking_core::id(),
-            accounts: nft_staking_core::accounts::InitializeConfig {
-                admin: payer.pubkey(),
-                collection: fx.collection,
-                config: fx.config,
-                rewards_mint: fx.rewards_mint,
-                token_program: TOKEN_PROGRAM_ID,
-                system_program: SYSTEM_PROGRAM_ID,
-            }
-            .to_account_metas(None),
-            data: nft_staking_core::instruction::InitializeConfig {
                 rewards_per_day: REWARDS_PER_DAY,
                 min_stake_duration: MIN_STAKE_DURATION,
             }
             .data(),
         },
     );
+
+    (
+        result,
+        Fixture {
+            collection: collection.pubkey(),
+            update_authority,
+            config,
+            rewards_mint,
+        },
+    )
 }
 
 fn mint_nft(svm: &mut LiteSVM, user: &Keypair, fx: &Fixture) -> Pubkey {
@@ -262,11 +260,10 @@ fn mint_nft(svm: &mut LiteSVM, user: &Keypair, fx: &Fixture) -> Pubkey {
     asset.pubkey()
 }
 
-/// Collection with config initialized and one NFT minted to `payer`.
+/// Collection (with config) and one NFT minted to `payer`.
 fn staking_setup() -> (LiteSVM, Keypair, Fixture, Pubkey) {
     let (mut svm, payer) = setup();
     let fx = create_collection(&mut svm, &payer);
-    initialize_config(&mut svm, &payer, &fx);
     let asset = mint_nft(&mut svm, &payer, &fx);
     (svm, payer, fx, asset)
 }
@@ -1051,4 +1048,31 @@ fn crank_with_empty_vault_still_updates_oracle() {
     set_clock(&mut svm, at(17, 0));
     crank(&mut svm, &payer);
     assert_eq!(oracle_transfer_result(&svm), ExternalValidationResult::Rejected);
+}
+
+#[test]
+fn create_collection_initializes_config_and_rewards_mint() {
+    use anchor_lang::{solana_program::program_option::COption, AccountDeserialize};
+
+    let (mut svm, payer) = setup();
+    let fx = create_collection(&mut svm, &payer);
+
+    let account = svm.get_account(&fx.config).unwrap();
+    let config = nft_staking_core::Config::try_deserialize(&mut account.data.as_ref()).unwrap();
+    assert_eq!(config.collection, fx.collection);
+    assert_eq!(config.rewards_per_day, REWARDS_PER_DAY);
+    assert_eq!(config.min_stake_duration, MIN_STAKE_DURATION);
+
+    let mint = svm.get_account(&fx.rewards_mint).unwrap();
+    let mint = spl_token::state::Mint::unpack(&mint.data).unwrap();
+    assert_eq!(mint.mint_authority, COption::Some(fx.config));
+}
+
+#[test]
+fn create_collection_requires_initialized_oracle() {
+    let (mut svm, payer) = setup_without_oracle();
+    let (result, fx) = try_create_collection(&mut svm, &payer);
+    assert!(result.is_err());
+    assert!(svm.get_account(&fx.collection).is_none());
+    assert!(svm.get_account(&fx.config).is_none());
 }
