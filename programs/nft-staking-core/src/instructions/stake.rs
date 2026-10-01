@@ -8,7 +8,7 @@ use mpl_core::{
 use crate::{
     attributes::{assert_asset, asset_attributes, set_attribute, staked_at},
     error::ErrorCode,
-    Config, CONFIG_SEED, STAKED_AT_KEY, UPDATE_AUTHORITY_SEED,
+    Config, CONFIG_SEED, LAST_CLAIMED_AT_KEY, STAKED_AT_KEY, UPDATE_AUTHORITY_SEED,
 };
 
 #[derive(Accounts)]
@@ -56,6 +56,7 @@ impl Stake<'_> {
             None => {
                 let mut attribute_list = Vec::new();
                 set_attribute(&mut attribute_list, STAKED_AT_KEY, now.to_string());
+                set_attribute(&mut attribute_list, LAST_CLAIMED_AT_KEY, now.to_string());
                 AddPluginV1CpiBuilder::new(&self.core_program.to_account_info())
                     .asset(&asset)
                     .collection(Some(&self.collection.to_account_info()))
@@ -68,6 +69,7 @@ impl Stake<'_> {
             Some(mut attribute_list) => {
                 require!(staked_at(&attribute_list).is_none(), ErrorCode::AlreadyStaked);
                 set_attribute(&mut attribute_list, STAKED_AT_KEY, now.to_string());
+                set_attribute(&mut attribute_list, LAST_CLAIMED_AT_KEY, now.to_string());
                 UpdatePluginV1CpiBuilder::new(&self.core_program.to_account_info())
                     .asset(&asset)
                     .collection(Some(&self.collection.to_account_info()))

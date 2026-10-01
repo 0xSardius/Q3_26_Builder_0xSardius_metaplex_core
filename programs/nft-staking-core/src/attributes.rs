@@ -5,7 +5,7 @@ use mpl_core::{
     types::{Attribute, Attributes, PluginType, UpdateAuthority},
 };
 
-use crate::{error::ErrorCode, SECONDS_PER_DAY, STAKED_AT_KEY};
+use crate::{error::ErrorCode, LAST_CLAIMED_AT_KEY, STAKED_AT_KEY};
 
 /// Checks the asset belongs to `collection` and is owned by `owner`.
 pub fn assert_asset(asset: &AccountInfo, collection: &Pubkey, owner: &Pubkey) -> Result<()> {
@@ -42,18 +42,19 @@ pub fn set_attribute(list: &mut Vec<Attribute>, key: &str, value: String) {
     }
 }
 
-/// Timestamp rewards accrue from, or None when the asset isn't staked.
-pub fn staked_at(list: &[Attribute]) -> Option<i64> {
-    get_attribute(list, STAKED_AT_KEY)
+fn timestamp(list: &[Attribute], key: &str) -> Option<i64> {
+    get_attribute(list, key)
         .and_then(|v| v.parse::<i64>().ok())
         .filter(|ts| *ts > 0)
 }
 
-pub fn accrued_rewards(rewards_per_day: u64, elapsed: i64) -> Result<u64> {
-    let elapsed = u128::try_from(elapsed.max(0)).map_err(|_| error!(ErrorCode::Overflow))?;
-    let amount = elapsed
-        .checked_mul(rewards_per_day as u128)
-        .ok_or(ErrorCode::Overflow)?
-        / SECONDS_PER_DAY as u128;
-    u64::try_from(amount).map_err(|_| error!(ErrorCode::Overflow))
+/// When the current stake began, or None when the asset isn't staked.
+pub fn staked_at(list: &[Attribute]) -> Option<i64> {
+    timestamp(list, STAKED_AT_KEY)
+}
+
+/// When rewards last paid out; falls back to `staked_at` if never claimed.
+pub fn rewards_since(list: &[Attribute]) -> Option<i64> {
+    let staked_at = staked_at(list)?;
+    Some(timestamp(list, LAST_CLAIMED_AT_KEY).map_or(staked_at, |ts| ts.max(staked_at)))
 }

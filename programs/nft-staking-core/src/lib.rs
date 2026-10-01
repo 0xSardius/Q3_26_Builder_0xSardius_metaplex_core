@@ -2,6 +2,7 @@ pub mod attributes;
 pub mod constants;
 pub mod error;
 pub mod instructions;
+pub mod rewards;
 pub mod state;
 
 use anchor_lang::prelude::*;
@@ -18,6 +19,7 @@ declare_id!("814Q7NeEeZSJ3k1fDorbfKdd2tUrKCBzCFMcUeEhXYLH");
 //
 // stake:   Attributes["staked_at"] = now, FreezeDelegate(frozen) with the PDA as authority
 // unstake: thaw + remove FreezeDelegate, reset "staked_at", mint accrued rewards
+// claim:   mint rewards since "last_claimed_at", move that checkpoint; stays frozen
 
 #[program]
 pub mod nft_staking_core {
@@ -55,5 +57,10 @@ pub mod nft_staking_core {
     #[instruction(discriminator = 4)]
     pub fn unstake(ctx: Context<Unstake>) -> Result<()> {
         ctx.accounts.unstake(&ctx.bumps)
+    }
+
+    #[instruction(discriminator = 5)]
+    pub fn claim_rewards(ctx: Context<ClaimRewards>) -> Result<()> {
+        ctx.accounts.claim_rewards(&ctx.bumps)
     }
 }

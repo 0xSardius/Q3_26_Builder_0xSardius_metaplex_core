@@ -14,6 +14,8 @@ pub enum ErrorCode {
     NotStaked,
     #[msg("Minimum stake duration has not elapsed")]
     StakeLocked,
+    #[msg("No rewards have accrued since the last claim")]
+    NothingToClaim,
     #[msg("Arithmetic overflow")]
     Overflow,
 }

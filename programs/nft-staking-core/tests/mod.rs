@@ -226,6 +226,27 @@ fn unstake_ix(owner: &Pubkey, fx: &Fixture, asset: &Pubkey) -> Instruction {
     }
 }
 
+fn claim_ix(owner: &Pubkey, fx: &Fixture, asset: &Pubkey) -> Instruction {
+    Instruction {
+        program_id: nft_staking_core::id(),
+        accounts: nft_staking_core::accounts::ClaimRewards {
+            owner: *owner,
+            asset: *asset,
+            collection: fx.collection,
+            update_authority: fx.update_authority,
+            config: fx.config,
+            rewards_mint: fx.rewards_mint,
+            owner_rewards_ata: get_associated_token_address(owner, &fx.rewards_mint),
+            token_program: TOKEN_PROGRAM_ID,
+            associated_token_program: ASSOCIATED_TOKEN_PROGRAM_ID,
+            system_program: SYSTEM_PROGRAM_ID,
+            core_program: CORE_PROGRAM_ID,
+        }
+        .to_account_metas(None),
+        data: nft_staking_core::instruction::ClaimRewards {}.data(),
+    }
+}
+
 fn transfer_ix(owner: &Pubkey, fx: &Fixture, asset: &Pubkey, new_owner: &Pubkey) -> Instruction {
     TransferV1Builder::new()
         .asset(*asset)
@@ -437,4 +458,72 @@ fn restake_after_unstake() {
         staked_at_attr(&svm, &asset),
         Some((START + 3 * DAY).to_string())
     );
+}
+
+#[test]
+fn claim_pays_and_keeps_nft_frozen() {
+    let (mut svm, payer, fx, asset) = staking_setup();
+    send(&mut svm, &payer, &[], stake_ix(&payer.pubkey(), &fx, &asset));
+
+    set_clock(&mut svm, START + DAY);
+    send(&mut svm, &payer, &[], claim_ix(&payer.pubkey(), &fx, &asset));
+
+    let ata = get_associated_token_address(&payer.pubkey(), &fx.rewards_mint);
+    assert_eq!(token_amount(&svm, &ata), REWARDS_PER_DAY);
+    assert!(is_frozen(&svm, &asset));
+    assert_eq!(staked_at_attr(&svm, &asset), Some(START.to_string()));
+
+    let recipient = Keypair::new().pubkey();
+    let result = try_send(
+        &mut svm,
+        &payer,
+        &[],
+        transfer_ix(&payer.pubkey(), &fx, &asset, &recipient),
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn claim_then_unstake_pays_only_the_remainder() {
+    let (mut svm, payer, fx, asset) = staking_setup();
+    send(&mut svm, &payer, &[], stake_ix(&payer.pubkey(), &fx, &asset));
+
+    set_clock(&mut svm, START + DAY);
+    send(&mut svm, &payer, &[], claim_ix(&payer.pubkey(), &fx, &asset));
+    set_clock(&mut svm, START + 3 * DAY);
+    send(&mut svm, &payer, &[], unstake_ix(&payer.pubkey(), &fx, &asset));
+
+    let ata = get_associated_token_address(&payer.pubkey(), &fx.rewards_mint);
+    assert_eq!(token_amount(&svm, &ata), 3 * REWARDS_PER_DAY);
+}
+
+#[test]
+fn claim_does_not_restart_unstake_lock() {
+    let (mut svm, payer, fx, asset) = staking_setup();
+    send(&mut svm, &payer, &[], stake_ix(&payer.pubkey(), &fx, &asset));
+
+    set_clock(&mut svm, START + MIN_STAKE_DURATION - 10);
+    send(&mut svm, &payer, &[], claim_ix(&payer.pubkey(), &fx, &asset));
+    set_clock(&mut svm, START + MIN_STAKE_DURATION);
+    send(&mut svm, &payer, &[], unstake_ix(&payer.pubkey(), &fx, &asset));
+
+    assert!(full_asset(&svm, &asset).plugin_list.freeze_delegate.is_none());
+}
+
+#[test]
+fn claim_twice_in_same_second_fails() {
+    let (mut svm, payer, fx, asset) = staking_setup();
+    send(&mut svm, &payer, &[], stake_ix(&payer.pubkey(), &fx, &asset));
+
+    set_clock(&mut svm, START + DAY);
+    send(&mut svm, &payer, &[], claim_ix(&payer.pubkey(), &fx, &asset));
+    let result = try_send(&mut svm, &payer, &[], claim_ix(&payer.pubkey(), &fx, &asset));
+    assert!(result.is_err());
+}
+
+#[test]
+fn claim_on_unstaked_nft_fails() {
+    let (mut svm, payer, fx, asset) = staking_setup();
+    let result = try_send(&mut svm, &payer, &[], claim_ix(&payer.pubkey(), &fx, &asset));
+    assert!(result.is_err());
 }

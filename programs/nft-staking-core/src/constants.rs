@@ -13,5 +13,8 @@ pub const REWARDS_DECIMALS: u8 = 6;
 
 pub const SECONDS_PER_DAY: i64 = 86_400;
 
-/// Attribute key on each asset: unix timestamp rewards accrue from, or "0" when unstaked.
+/// Attribute key on each asset: unix timestamp the stake began, or "0" when unstaked.
 pub const STAKED_AT_KEY: &str = "staked_at";
+
+/// Attribute key on each asset: unix timestamp rewards accrue from.
+pub const LAST_CLAIMED_AT_KEY: &str = "last_claimed_at";

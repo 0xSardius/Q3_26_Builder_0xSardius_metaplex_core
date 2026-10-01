@@ -4,25 +4,24 @@ use anchor_spl::{
     token_interface::{Mint, TokenAccount, TokenInterface},
 };
 use mpl_core::{
-    instructions::{RemovePluginV1CpiBuilder, UpdatePluginV1CpiBuilder},
-    types::{Attributes, FreezeDelegate, Plugin, PluginType},
+    instructions::UpdatePluginV1CpiBuilder,
+    types::{Attributes, Plugin},
     ID as CORE_PROGRAM_ID,
 };
 
 use crate::{
-    attributes::{assert_asset, asset_attributes, rewards_since, set_attribute, staked_at},
+    attributes::{assert_asset, asset_attributes, rewards_since, set_attribute},
     error::ErrorCode,
     rewards::{accrued_rewards, mint_rewards},
-    Config, CONFIG_SEED, LAST_CLAIMED_AT_KEY, REWARDS_SEED, STAKED_AT_KEY,
-    UPDATE_AUTHORITY_SEED,
+    Config, CONFIG_SEED, LAST_CLAIMED_AT_KEY, REWARDS_SEED, UPDATE_AUTHORITY_SEED,
 };
 
 #[derive(Accounts)]
-pub struct Unstake<'info> {
+pub struct ClaimRewards<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
 
-    /// CHECK: Core-owned; ownership and collection checked in `unstake`.
+    /// CHECK: Core-owned; ownership and collection checked in `claim_rewards`.
     #[account(mut, owner = CORE_PROGRAM_ID)]
     pub asset: UncheckedAccount<'info>,
 
@@ -30,7 +29,7 @@ pub struct Unstake<'info> {
     #[account(mut, owner = CORE_PROGRAM_ID)]
     pub collection: UncheckedAccount<'info>,
 
-    /// CHECK: PDA signer; holds the FreezeDelegate and Attributes authority.
+    /// CHECK: PDA signer; holds the Attributes authority.
     #[account(seeds = [UPDATE_AUTHORITY_SEED, collection.key().as_ref()], bump)]
     pub update_authority: UncheckedAccount<'info>,
 
@@ -62,20 +61,20 @@ pub struct Unstake<'info> {
     pub core_program: UncheckedAccount<'info>,
 }
 
-impl Unstake<'_> {
-    pub fn unstake(&self, bumps: &UnstakeBumps) -> Result<()> {
+impl ClaimRewards<'_> {
+    pub fn claim_rewards(&self, bumps: &ClaimRewardsBumps) -> Result<()> {
         let asset = self.asset.to_account_info();
         assert_asset(&asset, &self.collection.key(), &self.owner.key())?;
 
         let mut attribute_list = asset_attributes(&asset).ok_or(ErrorCode::NotStaked)?;
-        let staked_at = staked_at(&attribute_list).ok_or(ErrorCode::NotStaked)?;
-        let now = Clock::get()?.unix_timestamp;
-        require!(
-            now - staked_at >= self.config.min_stake_duration,
-            ErrorCode::StakeLocked
-        );
         let since = rewards_since(&attribute_list).ok_or(ErrorCode::NotStaked)?;
+        let now = Clock::get()?.unix_timestamp;
         let amount = accrued_rewards(self.config.rewards_per_day, now - since)?;
+        require!(amount > 0, ErrorCode::NothingToClaim);
+
+        // Only the accrual checkpoint moves; `staked_at` and the freeze stay untouched,
+        // so claiming never restarts the unstake lock or thaws the asset.
+        set_attribute(&mut attribute_list, LAST_CLAIMED_AT_KEY, now.to_string());
 
         let collection_key = self.collection.key();
         let signer_seeds: &[&[&[u8]]] = &[&[
@@ -83,29 +82,6 @@ impl Unstake<'_> {
             collection_key.as_ref(),
             &[bumps.update_authority],
         ]];
-
-        // A frozen FreezeDelegate rejects its own removal, so thaw first.
-        UpdatePluginV1CpiBuilder::new(&self.core_program.to_account_info())
-            .asset(&asset)
-            .collection(Some(&self.collection.to_account_info()))
-            .payer(&self.owner.to_account_info())
-            .authority(Some(&self.update_authority.to_account_info()))
-            .system_program(&self.system_program.to_account_info())
-            .plugin(Plugin::FreezeDelegate(FreezeDelegate { frozen: false }))
-            .invoke_signed(signer_seeds)?;
-
-        // Removing an owner-managed plugin needs the owner; the delegate can only use it.
-        RemovePluginV1CpiBuilder::new(&self.core_program.to_account_info())
-            .asset(&asset)
-            .collection(Some(&self.collection.to_account_info()))
-            .payer(&self.owner.to_account_info())
-            .authority(Some(&self.owner.to_account_info()))
-            .system_program(&self.system_program.to_account_info())
-            .plugin_type(PluginType::FreezeDelegate)
-            .invoke()?;
-
-        set_attribute(&mut attribute_list, STAKED_AT_KEY, "0".to_string());
-        set_attribute(&mut attribute_list, LAST_CLAIMED_AT_KEY, now.to_string());
         UpdatePluginV1CpiBuilder::new(&self.core_program.to_account_info())
             .asset(&asset)
             .collection(Some(&self.collection.to_account_info()))
